@@ -2,6 +2,7 @@ package com.example.gromashai.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -43,7 +44,10 @@ fun Day2Screen(api: OpenAiApi) {
             minLines = 2
         )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
             OutlinedTextField(
                 value = s.maxOutputTokens,
                 onValueChange = vm::updateMaxTokens,
@@ -96,7 +100,10 @@ private fun ResultCard(title: String, text: String) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
-            Text(text.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium)
+
+            SelectionContainer {
+                Text(text = text.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium)
+            }
         }
     }
 }
