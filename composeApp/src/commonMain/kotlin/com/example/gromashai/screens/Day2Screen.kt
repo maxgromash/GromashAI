@@ -2,8 +2,8 @@ package com.example.gromashai.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -24,7 +24,7 @@ fun Day2Screen(api: OpenAiApi) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(scroll) // ✅ теперь вся страница скроллится
+            .verticalScroll(scroll)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -33,7 +33,7 @@ fun Day2Screen(api: OpenAiApi) {
             onValueChange = vm::updatePrompt,
             label = { Text("Введите запрос") },
             modifier = Modifier.fillMaxWidth(),
-            minLines = 2
+            minLines = 3
         )
 
         OutlinedTextField(
@@ -44,25 +44,33 @@ fun Day2Screen(api: OpenAiApi) {
             minLines = 2
         )
 
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
                 value = s.maxOutputTokens,
                 onValueChange = vm::updateMaxTokens,
                 label = { Text("Ограничение длины (tokens)") },
-                modifier = Modifier.weight(1f),
-                singleLine = true
+                modifier = Modifier.weight(1f)
             )
             OutlinedTextField(
                 value = s.stopSequence,
                 onValueChange = vm::updateStop,
                 label = { Text("Условие завершения (строка)") },
-                modifier = Modifier.weight(1f),
-                singleLine = true
+                modifier = Modifier.weight(1f)
             )
         }
+
+        Divider(Modifier.padding(vertical = 6.dp))
+
+        // Day4 temperature UI (одиночное поле + кнопка "сравнить")
+        Text("День 4: Temperature", style = MaterialTheme.typography.titleMedium)
+
+        OutlinedTextField(
+            value = s.temperature,
+            onValueChange = vm::updateTemperature,
+            label = { Text("Температура (для ручного прогона, если нужно)") },
+            supportingText = { Text("Для задания мы сравниваем фиксированные 0 / 0.7 / 1.2") },
+            modifier = Modifier.fillMaxWidth()
+        )
 
         if (s.error != null) {
             Text("Ошибка: ${s.error}", color = MaterialTheme.colorScheme.error)
@@ -85,10 +93,25 @@ fun Day2Screen(api: OpenAiApi) {
             }
         }
 
+        Button(
+            onClick = vm::runTemperatureComparison,
+            enabled = !s.isLoading,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Сравнить temperature: 0 / 0.7 / 1.2")
+        }
+
         Spacer(Modifier.height(6.dp))
 
         ResultCard(title = "Ответ без ограничений", text = s.resultNoLimits)
         ResultCard(title = "Ответ с ограничениями", text = s.resultWithLimits)
+
+        Spacer(Modifier.height(12.dp))
+        Text("Результаты temperature", style = MaterialTheme.typography.titleMedium)
+
+        ResultCard(title = "temperature = 0", text = s.resultT0)
+        ResultCard(title = "temperature = 0.7", text = s.resultT07)
+        ResultCard(title = "temperature = 1.2", text = s.resultT12)
 
         Spacer(Modifier.height(24.dp))
     }
@@ -100,9 +123,8 @@ private fun ResultCard(title: String, text: String) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
-
             SelectionContainer {
-                Text(text = text.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium)
+                Text(text.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
