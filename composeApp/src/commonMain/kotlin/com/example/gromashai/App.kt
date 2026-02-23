@@ -10,9 +10,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.gromashai.hf.HfApi
+import com.example.gromashai.openai.OpenAiAgent
 import com.example.gromashai.openai.OpenAiApi
 import com.example.gromashai.openai.PlatformApiKeyProvider
 import com.example.gromashai.openai.createHttpClient
+import com.example.gromashai.screens.ChatScreen
 import com.example.gromashai.screens.Day1Screen
 import com.example.gromashai.screens.Day2Screen
 import com.example.gromashai.screens.Day5Screen
@@ -40,6 +42,11 @@ private sealed interface Screen {
         override val id: String = "day5"
         override val title: String = "День 5 (Hugging Face)"
     }
+
+    data object AgentChat : Screen {
+        override val id: String = "agent_chat"
+        override val title: String = "Чат с Агентом"
+    }
 }
 
 private fun screenFromId(id: String): Screen = when (id) {
@@ -47,6 +54,7 @@ private fun screenFromId(id: String): Screen = when (id) {
     Screen.Day1.id -> Screen.Day1
     Screen.Day2.id -> Screen.Day2
     Screen.Day5.id -> Screen.Day5
+    Screen.AgentChat.id -> Screen.AgentChat
     else -> Screen.Home
 }
 
@@ -58,7 +66,7 @@ fun App() {
         val apiKeyProvider = remember { PlatformApiKeyProvider() }
         val openAiApi = remember { OpenAiApi(http, apiKeyProvider) }
         val hfApi = remember { HfApi(http, apiKeyProvider.getHfToken()) }
-
+        val agent = remember { OpenAiAgent(openAiApi, "Ты опытный Android-разработчик. Ответ не более 1 предложения, остальное - код, если требуется.") }
         var screenId by rememberSaveable { mutableStateOf(Screen.Home.id) }
         val screen = remember(screenId) { screenFromId(screenId) }
 
@@ -88,17 +96,20 @@ fun App() {
                     Screen.Home.id -> HomeScreen(
                         onOpenDay1 = { screenId = Screen.Day1.id },
                         onOpenDay2 = { screenId = Screen.Day2.id },
-                        onOpenDay5 = { screenId = Screen.Day5.id }
+                        onOpenDay5 = { screenId = Screen.Day5.id },
+                        onOpenAgent = { screenId = Screen.AgentChat.id }
                     )
 
                     Screen.Day1.id -> Day1Screen(api = openAiApi)
                     Screen.Day2.id -> Day2Screen(api = openAiApi)
                     Screen.Day5.id -> Day5Screen(api = hfApi)
+                    Screen.AgentChat.id -> ChatScreen(agent = agent)
 
                     else -> HomeScreen(
                         onOpenDay1 = { screenId = Screen.Day1.id },
                         onOpenDay2 = { screenId = Screen.Day2.id },
-                        onOpenDay5 = { screenId = Screen.Day5.id }
+                        onOpenDay5 = { screenId = Screen.Day5.id },
+                        onOpenAgent = { screenId = Screen.AgentChat.id }
                     )
                 }
             }
@@ -110,7 +121,8 @@ fun App() {
 private fun HomeScreen(
     onOpenDay1: () -> Unit,
     onOpenDay2: () -> Unit,
-    onOpenDay5: () -> Unit
+    onOpenDay5: () -> Unit,
+    onOpenAgent: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -134,6 +146,11 @@ private fun HomeScreen(
             title = "Day 5",
             subtitle = "Hugging Face Inference API (Llama, Qwen, SmolLM)",
             onClick = onOpenDay5
+        )
+        DayTile(
+            title = "Agent Chat",
+            subtitle = "Простой агент с инкапсулированной логикой",
+            onClick = onOpenAgent
         )
     }
 }

@@ -13,8 +13,35 @@ class OpenAiApi(
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
+     * Универсальный метод для чата, принимающий список сообщений (включая системные и историю).
+     */
+    suspend fun chat(messages: List<com.example.gromashai.openai.ChatMessage>): String {
+        val apiKey = apiKeyProvider.getOpenAiKey()
+        
+        val bodyJson = buildJsonObject {
+            put("model", JsonPrimitive("gpt-4o"))
+            put("messages", buildJsonArray {
+                messages.forEach { msg ->
+                    add(buildJsonObject {
+                        put("role", JsonPrimitive(msg.role))
+                        put("content", JsonPrimitive(msg.content))
+                    })
+                }
+            })
+        }
+
+        val resp: JsonObject = http.post("https://api.openai.com/v1/chat/completions") {
+            header(HttpHeaders.Authorization, "Bearer $apiKey")
+            contentType(ContentType.Application.Json)
+            setBody(bodyJson)
+        }.body()
+
+        return resp["choices"]?.jsonArray?.get(0)?.jsonObject?.get("message")?.jsonObject?.get("content")?.jsonPrimitive?.content
+            ?: "Ошибка: не удалось получить ответ"
+    }
+
+    /**
      * Day1: lucky number + horoscope через Structured Outputs.
-     * Возвращает JSON-строку по схеме LuckyHoroscope (парсишь снаружи).
      */
     suspend fun day1GenerateLuckyHoroscope(): String {
         val apiKey = apiKeyProvider.getOpenAiKey()
@@ -45,7 +72,6 @@ class OpenAiApi(
                 })
             })
 
-            // Structured outputs (Responses API) — text.format
             put("text", buildJsonObject {
                 put("format", buildJsonObject {
                     put("type", JsonPrimitive("json_schema"))
@@ -83,19 +109,13 @@ class OpenAiApi(
             ?: error("Пустой ответ: нет output.message.content.text. Ответ: ${resp.toString().take(700)}")
     }
 
-    /**
-     * Day2 / Day4:
-     * - без ограничений: только userPrompt
-     * - с ограничениями: добавляем formatHint + max_output_tokens + инструкцию завершения (stopSequence)
-     * - temperature: параметр для сравнения (Day4)
-     */
     suspend fun day2Generate(
         userPrompt: String,
         formatHint: String,
         maxOutputTokens: Int?,
         stopSequence: String?,
         useLimits: Boolean,
-        temperature: Double?, // Day4
+        temperature: Double?,
     ): Day2ApiResult {
         val apiKey = apiKeyProvider.getOpenAiKey()
 
@@ -133,17 +153,13 @@ class OpenAiApi(
             put("metadata", buildJsonObject {
                 put("app", JsonPrimitive("GromashAI"))
                 put("feature", JsonPrimitive(if (useLimits) "day2_with_limits" else "day2_no_limits"))
-
-                // ✅ metadata значения должны быть строками
                 if (temperature != null) put("temperature", JsonPrimitive(temperature.toString()))
             })
 
-            // ✅ temperature — именно число (на верхнем уровне)
             if (temperature != null) {
                 put("temperature", JsonPrimitive(temperature))
             }
 
-            // Можно держать reasoning minimal, чтобы при малых max_output_tokens чаще успевал текст
             if (useLimits) {
                 put("reasoning", buildJsonObject {
                     put("effort", JsonPrimitive("minimal"))
@@ -174,7 +190,7 @@ class OpenAiApi(
 
         val status = resp["status"]?.jsonPrimitive?.contentOrNull
         val incompleteReason = resp["incomplete_details"]
-            ?.takeIf { it !is JsonNull }          // ✅ защита от JsonNull
+            ?.takeIf { it !is JsonNull }
             ?.jsonObject
             ?.get("reason")
             ?.jsonPrimitive
