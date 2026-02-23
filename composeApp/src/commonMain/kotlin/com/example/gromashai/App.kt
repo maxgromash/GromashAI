@@ -9,11 +9,13 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.example.gromashai.hf.HfApi
 import com.example.gromashai.openai.OpenAiApi
 import com.example.gromashai.openai.PlatformApiKeyProvider
 import com.example.gromashai.openai.createHttpClient
 import com.example.gromashai.screens.Day1Screen
 import com.example.gromashai.screens.Day2Screen
+import com.example.gromashai.screens.Day5Screen
 
 private sealed interface Screen {
     val id: String
@@ -33,12 +35,18 @@ private sealed interface Screen {
         override val id: String = "day2"
         override val title: String = "День 2"
     }
+
+    data object Day5 : Screen {
+        override val id: String = "day5"
+        override val title: String = "День 5 (Hugging Face)"
+    }
 }
 
 private fun screenFromId(id: String): Screen = when (id) {
     Screen.Home.id -> Screen.Home
     Screen.Day1.id -> Screen.Day1
     Screen.Day2.id -> Screen.Day2
+    Screen.Day5.id -> Screen.Day5
     else -> Screen.Home
 }
 
@@ -47,9 +55,10 @@ private fun screenFromId(id: String): Screen = when (id) {
 fun App() {
     MaterialTheme {
         val http = remember { createHttpClient() }
-        val api = remember { OpenAiApi(http, PlatformApiKeyProvider()) }
+        val apiKeyProvider = remember { PlatformApiKeyProvider() }
+        val openAiApi = remember { OpenAiApi(http, apiKeyProvider) }
+        val hfApi = remember { HfApi(http, apiKeyProvider.getHfToken()) }
 
-        // ✅ fix: сохраняем только String (Bundle-safe)
         var screenId by rememberSaveable { mutableStateOf(Screen.Home.id) }
         val screen = remember(screenId) { screenFromId(screenId) }
 
@@ -78,15 +87,18 @@ fun App() {
                 when (screenId) {
                     Screen.Home.id -> HomeScreen(
                         onOpenDay1 = { screenId = Screen.Day1.id },
-                        onOpenDay2 = { screenId = Screen.Day2.id }
+                        onOpenDay2 = { screenId = Screen.Day2.id },
+                        onOpenDay5 = { screenId = Screen.Day5.id }
                     )
 
-                    Screen.Day1.id -> Day1Screen(api = api)
-                    Screen.Day2.id -> Day2Screen(api = api)
+                    Screen.Day1.id -> Day1Screen(api = openAiApi)
+                    Screen.Day2.id -> Day2Screen(api = openAiApi)
+                    Screen.Day5.id -> Day5Screen(api = hfApi)
 
                     else -> HomeScreen(
                         onOpenDay1 = { screenId = Screen.Day1.id },
-                        onOpenDay2 = { screenId = Screen.Day2.id }
+                        onOpenDay2 = { screenId = Screen.Day2.id },
+                        onOpenDay5 = { screenId = Screen.Day5.id }
                     )
                 }
             }
@@ -97,7 +109,8 @@ fun App() {
 @Composable
 private fun HomeScreen(
     onOpenDay1: () -> Unit,
-    onOpenDay2: () -> Unit
+    onOpenDay2: () -> Unit,
+    onOpenDay5: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -116,6 +129,11 @@ private fun HomeScreen(
             title = "Day 2",
             subtitle = "Формат + лимит длины + stop sequence (сравнение)",
             onClick = onOpenDay2
+        )
+        DayTile(
+            title = "Day 5",
+            subtitle = "Hugging Face Inference API (Llama, Qwen, SmolLM)",
+            onClick = onOpenDay5
         )
     }
 }

@@ -94,10 +94,13 @@ android {
                 .ifBlank { System.getenv("OPENAI_API_KEY") ?: "" }
                 .trim()
 
-        // Если хочешь падать при пустом ключе в debug — раскомментируй:
-        // if (openAiKey.isBlank()) error("OPENAI_API_KEY is blank. Put it into root local.properties or env var.")
+        val hfToken =
+            (localProps.getProperty("HF_API_TOKEN") ?: "")
+                .ifBlank { System.getenv("HF_API_TOKEN") ?: "" }
+                .trim()
 
         buildConfigField("String", "OPENAI_API_KEY", "\"$openAiKey\"")
+        buildConfigField("String", "HF_API_TOKEN", "\"$hfToken\"")
     }
 
     buildFeatures {

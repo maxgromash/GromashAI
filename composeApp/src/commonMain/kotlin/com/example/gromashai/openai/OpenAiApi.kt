@@ -17,7 +17,7 @@ class OpenAiApi(
      * Возвращает JSON-строку по схеме LuckyHoroscope (парсишь снаружи).
      */
     suspend fun day1GenerateLuckyHoroscope(): String {
-        val apiKey = apiKeyProvider.get()
+        val apiKey = apiKeyProvider.getOpenAiKey()
 
         val prompt = """
             Сгенерируй:
@@ -97,7 +97,7 @@ class OpenAiApi(
         useLimits: Boolean,
         temperature: Double?, // Day4
     ): Day2ApiResult {
-        val apiKey = apiKeyProvider.get()
+        val apiKey = apiKeyProvider.getOpenAiKey()
 
         val stop = stopSequence?.trim()?.takeIf { it.isNotEmpty() }
 

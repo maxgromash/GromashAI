@@ -1,10 +1,11 @@
 package com.example.gromashai.openai
 
 interface ApiKeyProvider {
-    fun get(): String
+    fun getOpenAiKey(): String
+    fun getHfToken(): String
 }
 
-// ВАЖНО: expect class не имплементит интерфейс напрямую
 expect class PlatformApiKeyProvider() {
-    fun get(): String
+    fun getOpenAiKey(): String
+    fun getHfToken(): String
 }
