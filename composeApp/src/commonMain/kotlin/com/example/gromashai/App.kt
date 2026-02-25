@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -18,6 +19,7 @@ import com.example.gromashai.screens.ChatScreen
 import com.example.gromashai.screens.Day1Screen
 import com.example.gromashai.screens.Day2Screen
 import com.example.gromashai.screens.Day5Screen
+import com.example.gromashai.storage.Settings
 
 private sealed interface Screen {
     val id: String
@@ -60,13 +62,22 @@ private fun screenFromId(id: String): Screen = when (id) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun App() {
+fun App(context: Any? = null) {
     MaterialTheme {
         val http = remember { createHttpClient() }
         val apiKeyProvider = remember { PlatformApiKeyProvider() }
         val openAiApi = remember { OpenAiApi(http, apiKeyProvider) }
         val hfApi = remember { HfApi(http, apiKeyProvider.getHfToken()) }
-        val agent = remember { OpenAiAgent(openAiApi, "Ты опытный Android-разработчик. Ответ не более 1 предложения, остальное - код, если требуется.") }
+        
+        val settings = remember { Settings(context) }
+        val agent = remember { 
+            OpenAiAgent(
+                api = openAiApi, 
+                storage = settings,
+                initialSystemPrompt = "Ты опытный Android-разработчик. Ответ не более 1 предложения, остальное - код, если требуется."
+            ) 
+        }
+        
         var screenId by rememberSaveable { mutableStateOf(Screen.Home.id) }
         val screen = remember(screenId) { screenFromId(screenId) }
 
@@ -80,6 +91,16 @@ fun App() {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                     contentDescription = "Back"
+                                )
+                            }
+                        }
+                    },
+                    actions = {
+                        if (screenId == Screen.AgentChat.id) {
+                            IconButton(onClick = { agent.clearChat() }) {
+                                Icon(
+                                    imageVector = Icons.Filled.Delete,
+                                    contentDescription = "Clear Chat"
                                 )
                             }
                         }
