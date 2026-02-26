@@ -15,11 +15,11 @@ class OpenAiApi(
     /**
      * Универсальный метод для чата, принимающий список сообщений (включая системные и историю).
      */
-    suspend fun chat(messages: List<com.example.gromashai.openai.ChatMessage>): String {
+    suspend fun chat(messages: List<ChatMessage>, model: String = "gpt-4o"): AgentResponse {
         val apiKey = apiKeyProvider.getOpenAiKey()
         
         val bodyJson = buildJsonObject {
-            put("model", JsonPrimitive("gpt-4o"))
+            put("model", JsonPrimitive(model))
             put("messages", buildJsonArray {
                 messages.forEach { msg ->
                     add(buildJsonObject {
@@ -36,8 +36,19 @@ class OpenAiApi(
             setBody(bodyJson)
         }.body()
 
-        return resp["choices"]?.jsonArray?.get(0)?.jsonObject?.get("message")?.jsonObject?.get("content")?.jsonPrimitive?.content
+        val content = resp["choices"]?.jsonArray?.get(0)?.jsonObject?.get("message")?.jsonObject?.get("content")?.jsonPrimitive?.content
             ?: "Ошибка: не удалось получить ответ"
+            
+        val usageObj = resp["usage"]?.jsonObject
+        val usage = if (usageObj != null) {
+            TokenUsage(
+                promptTokens = usageObj["prompt_tokens"]?.jsonPrimitive?.int ?: 0,
+                completionTokens = usageObj["completion_tokens"]?.jsonPrimitive?.int ?: 0,
+                totalTokens = usageObj["total_tokens"]?.jsonPrimitive?.int ?: 0
+            )
+        } else null
+
+        return AgentResponse(content, usage)
     }
 
     /**

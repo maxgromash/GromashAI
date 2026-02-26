@@ -1,5 +1,7 @@
 package com.example.gromashai.hf
 
+import com.example.gromashai.openai.AgentResponse
+import com.example.gromashai.openai.TokenUsage
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.request.*
@@ -16,6 +18,51 @@ class HfApi(
 
     private val json = Json {
         ignoreUnknownKeys = true
+    }
+
+    suspend fun chat(messages: List<com.example.gromashai.openai.ChatMessage>, model: String): AgentResponse {
+        val requestBody = ChatRequest(
+            model = model,
+            messages = messages.map { ChatMessage(it.role, it.content) }
+        )
+
+        val response = try {
+            client.post(baseUrl) {
+                header(HttpHeaders.Authorization, "Bearer $apiToken")
+                contentType(ContentType.Application.Json)
+                setBody(requestBody)
+            }
+        } catch (e: Exception) {
+            throw Exception("Network error: ${e.message}")
+        }
+
+        val responseText = response.bodyAsText()
+
+        if (!response.status.isSuccess()) {
+             val errorMessage = try {
+                val element = json.parseToJsonElement(responseText)
+                if (element is JsonObject && element.containsKey("error")) {
+                    element["error"]?.jsonPrimitive?.content ?: responseText
+                } else {
+                    responseText
+                }
+            } catch (e: Exception) {
+                responseText
+            }
+            throw Exception("API Error (${response.status}): $errorMessage")
+        }
+
+        val chatResponse = json.decodeFromString<ChatResponse>(responseText)
+        val text = chatResponse.choices.firstOrNull()?.message?.content ?: ""
+        val usage = chatResponse.usage?.let {
+            TokenUsage(
+                promptTokens = it.promptTokens ?: 0,
+                completionTokens = it.completionTokens ?: 0,
+                totalTokens = it.totalTokens ?: 0
+            )
+        }
+
+        return AgentResponse(text, usage)
     }
 
     suspend fun generateText(modelId: String, prompt: String): HfResponse {

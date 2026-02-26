@@ -72,7 +72,8 @@ fun App(context: Any? = null) {
         val settings = remember { Settings(context) }
         val agent = remember { 
             OpenAiAgent(
-                api = openAiApi, 
+                openAiApi = openAiApi,
+                hfApi = hfApi,
                 storage = settings,
                 initialSystemPrompt = "Ты опытный Android-разработчик. Ответ не более 1 предложения, остальное - код, если требуется."
             ) 
@@ -110,8 +111,10 @@ fun App(context: Any? = null) {
         ) { padding ->
             Box(
                 modifier = Modifier
-                    .padding(padding)
                     .fillMaxSize()
+                    .padding(padding)
+                    .consumeWindowInsets(padding)
+                    .imePadding()
             ) {
                 when (screenId) {
                     Screen.Home.id -> HomeScreen(
