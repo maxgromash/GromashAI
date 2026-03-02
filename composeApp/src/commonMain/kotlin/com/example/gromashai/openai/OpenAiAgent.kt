@@ -2,15 +2,21 @@ package com.example.gromashai.openai
 
 import com.example.gromashai.hf.HfApi
 import com.example.gromashai.storage.Settings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+
+enum class ContextStrategy {
+    SLIDING_WINDOW,
+    STICKY_FACTS,
+    BRANCHING
+}
 
 /**
  * Сообщение чата.
@@ -24,10 +30,10 @@ data class ChatMessage(
 
 /**
  * Агент — это отдельная сущность, инкапсулирующая логику общения с LLM.
- * Теперь он поддерживает системный промпт и контекст всей беседы.
- * Добавлено сохранение истории в Settings.
- * Добавлена поддержка выбора модели и подсчет токенов.
- * Добавлено сжатие контекста.
+ * Поддерживает 3 стратегии контекста:
+ * 1. Sliding Window (последние N сообщений)
+ * 2. Sticky Facts (факты + последние N сообщений)
+ * 3. Branching (ветвление диалогов)
  */
 class OpenAiAgent(
     private val openAiApi: OpenAiApi,
@@ -38,78 +44,89 @@ class OpenAiAgent(
     private val _systemPrompt = MutableStateFlow(initialSystemPrompt)
     val systemPrompt: StateFlow<String> = _systemPrompt.asStateFlow()
 
-    // Вся история сообщений (для UI)
+    // Вся история сообщений текущей ветки
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
-    // Текущая саммари (сжатый контекст)
-    private val _summary = MutableStateFlow("")
-    val summary: StateFlow<String> = _summary.asStateFlow()
+    // --- Strategy ---
+    private val _strategy = MutableStateFlow(ContextStrategy.SLIDING_WINDOW)
+    val strategy: StateFlow<ContextStrategy> = _strategy.asStateFlow()
 
-    // Индекс в _messages, до которого сообщения уже включены в саммари
-    private val _summarizedToIndex = MutableStateFlow(0)
+    // --- Sticky Facts ---
+    private val _facts = MutableStateFlow("")
+    val facts: StateFlow<String> = _facts.asStateFlow()
 
+    // --- Branching ---
+    // Хранит историю для каждой ветки: Map<BranchID, List<ChatMessage>>
+    private val _branches = MutableStateFlow<Map<String, List<ChatMessage>>>(mapOf("Main" to emptyList()))
+    val branches: StateFlow<Map<String, List<ChatMessage>>> = _branches.asStateFlow()
+    
+    private val _currentBranchId = MutableStateFlow("Main")
+    val currentBranchId: StateFlow<String> = _currentBranchId.asStateFlow()
+
+    // --- Common ---
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
-    
-    // Флаг, идет ли сейчас процесс сжатия
-    private val _isCompressing = MutableStateFlow(false)
-    val isCompressing: StateFlow<Boolean> = _isCompressing.asStateFlow()
 
     private val _currentModel = MutableStateFlow(AgentModel.GPT_4O)
     val currentModel: StateFlow<AgentModel> = _currentModel.asStateFlow()
 
     private val _lastUsage = MutableStateFlow<TokenUsage?>(null)
     val lastUsage: StateFlow<TokenUsage?> = _lastUsage.asStateFlow()
-    
-    // Aggregate usage for the session
+
     private val _totalUsage = MutableStateFlow(TokenUsage(0, 0, 0))
     val totalUsage: StateFlow<TokenUsage> = _totalUsage.asStateFlow()
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val HISTORY_KEY = "chat_history_agent"
-    private val SUMMARY_KEY = "chat_summary_agent"
-    private val SUMMARY_IDX_KEY = "chat_summary_idx_agent"
-
-    // Константы для сжатия
-    private val KEEP_LAST_MESSAGES = 6 // Сколько сообщений храним "как есть" (не сжимаем)
-    private val COMPRESS_THRESHOLD = 5 // Начинаем сжимать, если незасжатых больше чем это число
+    private val HISTORY_KEY = "chat_history_agent_v3"
+    
+    // Config
+    private val SLIDING_WINDOW_SIZE = 4
+    private val FACTS_WINDOW_SIZE = 15
 
     init {
         loadHistory()
     }
+    
+    fun setStrategy(newStrategy: ContextStrategy) {
+        _strategy.value = newStrategy
+        saveHistory()
+    }
 
     private fun loadHistory() {
-        val savedMsgs = storage.getString(HISTORY_KEY)
-        val savedSummary = storage.getString(SUMMARY_KEY)
-        val savedIdx = storage.getString(SUMMARY_IDX_KEY)
-
-        if (!savedMsgs.isNullOrBlank()) {
+        val saved = storage.getString(HISTORY_KEY)
+        if (!saved.isNullOrBlank()) {
             try {
-                _messages.value = json.decodeFromString<List<ChatMessage>>(savedMsgs)
+                val data = json.decodeFromString<AgentPersistedData>(saved)
+                _branches.value = data.branches
+                _currentBranchId.value = data.currentBranchId
+                _messages.value = data.branches[data.currentBranchId] ?: emptyList()
+                _facts.value = data.facts
+                _strategy.value = data.strategy
+                _totalUsage.value = data.totalUsage
             } catch (e: Exception) {
                 _messages.value = emptyList()
             }
         }
-        
-        _summary.value = savedSummary ?: ""
-        _summarizedToIndex.value = savedIdx?.toIntOrNull() ?: 0
-        
-        // Safety check: index shouldn't be out of bounds if history was cleared externally
-        if (_summarizedToIndex.value > _messages.value.size) {
-            _summarizedToIndex.value = 0
-            _summary.value = ""
-        }
     }
 
     private fun saveHistory() {
+        // Перед сохранением обновляем текущую ветку в мапе
+        val currentMap = _branches.value.toMutableMap()
+        currentMap[_currentBranchId.value] = _messages.value
+        _branches.value = currentMap
+
         try {
-            val serializedMsgs = json.encodeToString(_messages.value)
-            storage.putString(HISTORY_KEY, serializedMsgs)
-            storage.putString(SUMMARY_KEY, _summary.value)
-            storage.putString(SUMMARY_IDX_KEY, _summarizedToIndex.value.toString())
+            val data = AgentPersistedData(
+                branches = _branches.value,
+                currentBranchId = _currentBranchId.value,
+                facts = _facts.value,
+                strategy = _strategy.value,
+                totalUsage = _totalUsage.value
+            )
+            storage.putString(HISTORY_KEY, json.encodeToString(data))
         } catch (e: Exception) {
-            // Ошибка сохранения не должна ломать UI
+            // ignore
         }
     }
 
@@ -120,41 +137,54 @@ class OpenAiAgent(
     fun setModel(model: AgentModel) {
         _currentModel.value = model
     }
+    
+    // --- Branching Logic ---
+    fun createBranch() {
+        val newId = "Branch ${_branches.value.size + 1}"
+        val currentHistory = _messages.value
+        
+        val newMap = _branches.value.toMutableMap()
+        newMap[newId] = currentHistory 
+        _branches.value = newMap
+        
+        switchBranch(newId)
+    }
+    
+    fun switchBranch(branchId: String) {
+        if (!_branches.value.containsKey(branchId)) return
+        
+        val oldId = _currentBranchId.value
+        val map = _branches.value.toMutableMap()
+        map[oldId] = _messages.value
+        _branches.value = map
+        
+        _currentBranchId.value = branchId
+        _messages.value = map[branchId] ?: emptyList()
+        saveHistory()
+    }
 
     suspend fun sendQuery(text: String) {
         if (text.isBlank()) return
         
         val userMsg = ChatMessage(role = "user", content = text)
         _messages.value = _messages.value + userMsg
+        
+        val map = _branches.value.toMutableMap()
+        map[_currentBranchId.value] = _messages.value
+        _branches.value = map
+        
         saveHistory()
         
         _isLoading.value = true
-        _lastUsage.value = null // Reset last usage while loading
+        _lastUsage.value = null 
+        
+        if (_strategy.value == ContextStrategy.STICKY_FACTS) {
+            updateFacts(text)
+        }
         
         try {
             val model = _currentModel.value
-            
-            // --- Формирование контекста ---
-            // 1. Системный промпт
-            val contextMessages = mutableListOf<ChatMessage>()
-            
-            // Если есть саммари, добавляем его в системный промпт или как первое сообщение
-            val sysContent = if (_summary.value.isNotBlank()) {
-                "${_systemPrompt.value}\n\n[CONTEXT SUMMARY]:\n${_summary.value}"
-            } else {
-                _systemPrompt.value
-            }
-            contextMessages.add(ChatMessage(role = "system", content = sysContent))
-
-            // 2. Добавляем сообщения, которые еще не были сжаты (начиная с _summarizedToIndex)
-            val currentIdx = _summarizedToIndex.value
-            val unsummarizedPart = if (currentIdx < _messages.value.size) {
-                _messages.value.subList(currentIdx, _messages.value.size)
-            } else {
-                emptyList()
-            }
-            
-            contextMessages.addAll(unsummarizedPart)
+            val contextMessages = prepareContextMessages()
 
             val response = when (model.provider) {
                 ModelProvider.OPENAI -> openAiApi.chat(contextMessages, model.id)
@@ -168,20 +198,16 @@ class OpenAiAgent(
             )
             _messages.value = _messages.value + assistantMsg
             
+            val mapAfter = _branches.value.toMutableMap()
+            mapAfter[_currentBranchId.value] = _messages.value
+            _branches.value = mapAfter
+            
             if (response.usage != null) {
                 _lastUsage.value = response.usage
                 updateTotalUsage(response.usage)
             }
             
             saveHistory()
-
-            // --- Проверка на необходимость сжатия ---
-            // Количество незасжатых сообщений
-            val unsummarizedCount = _messages.value.size - _summarizedToIndex.value
-            if (unsummarizedCount > COMPRESS_THRESHOLD) {
-                // Запускаем сжатие
-                 compressContext() 
-            }
 
         } catch (e: Exception) {
             val errorMsg = ChatMessage(role = "assistant", content = "Ошибка: ${e.message}")
@@ -191,61 +217,54 @@ class OpenAiAgent(
         }
     }
     
-    private suspend fun compressContext() {
-        if (_isCompressing.value) return
-        _isCompressing.value = true
+    private fun prepareContextMessages(): List<ChatMessage> {
+        val allMessages = _messages.value
+        val sysPrompt = _systemPrompt.value
+        
+        return when (_strategy.value) {
+            ContextStrategy.SLIDING_WINDOW -> {
+                val window = allMessages.takeLast(SLIDING_WINDOW_SIZE)
+                listOf(ChatMessage("system", sysPrompt)) + window
+            }
+            ContextStrategy.STICKY_FACTS -> {
+                val factsText = _facts.value.ifBlank { "Нет известных фактов." }
+                val augmentedSystem = """
+                    $sysPrompt
+                    
+                    [ВАЖНЫЕ ФАКТЫ И КОНТЕКСТ]:
+                    $factsText
+                """.trimIndent()
+                
+                val window = allMessages.takeLast(FACTS_WINDOW_SIZE)
+                listOf(ChatMessage("system", augmentedSystem)) + window
+            }
+            ContextStrategy.BRANCHING -> {
+                listOf(ChatMessage("system", sysPrompt)) + allMessages
+            }
+        }
+    }
+    
+    private suspend fun updateFacts(userText: String) {
+        val currentFacts = _facts.value
+        val prompt = """
+            Проанализируй сообщение пользователя и обнови список фактов.
+            Факты - это важные данные: цели, ограничения, предпочтения, решения.
+            
+            Текущие факты:
+            ${if (currentFacts.isBlank()) "(Нет)" else currentFacts}
+            
+            Сообщение:
+            $userText
+            
+            Верни обновленный список фактов на РУССКОМ языке. Будь краток.
+        """.trimIndent()
         
         try {
-            val totalMessages = _messages.value.size
-            val currentIdx = _summarizedToIndex.value
-            
-            // Мы хотим оставить "как есть" последние KEEP_LAST_MESSAGES
-            // Значит, сжимаем всё от currentIdx до (totalMessages - KEEP_LAST_MESSAGES)
-            val endIndexToCompress = totalMessages - KEEP_LAST_MESSAGES
-            
-            if (endIndexToCompress <= currentIdx) {
-                return // Нечего сжимать
-            }
-            
-            val chunkToCompress = _messages.value.subList(currentIdx, endIndexToCompress)
-            if (chunkToCompress.isEmpty()) return
-
-            val prevSummary = _summary.value
-            val contentToCompress = chunkToCompress.joinToString("\n") { "${it.role}: ${it.content}" }
-            
-            val compressionPrompt = """
-                Сделай ОЧЕНЬ краткую выжимку диалога. Сохраняй только самые важные факты и контекст.
-                
-                Текущая выжимка:
-                ${if (prevSummary.isBlank()) "(Нет)" else prevSummary}
-                
-                Новые сообщения:
-                $contentToCompress
-                
-                Обнови выжимку, включив новые данные. Отвечай ТОЛЬКО текстом новой выжимки на РУССКОМ языке. Максимально сжато.
-            """.trimIndent()
-            
-            // Для сжатия используем GPT-4o (стабильнее следует инструкции)
-            val msgs = listOf(ChatMessage("user", content = compressionPrompt))
-            val response = openAiApi.chat(msgs, "gpt-4o")
-            
-            val newSummary = response.content
-            
-            // Обновляем состояние
-            _summary.value = newSummary
-            _summarizedToIndex.value = endIndexToCompress
-            
-            // Учитываем токены, потраченные на сжатие (опционально, но полезно для статистики)
-            if (response.usage != null) {
-                updateTotalUsage(response.usage)
-            }
-            
+            val response = openAiApi.chat(listOf(ChatMessage("user", prompt)), "gpt-4o")
+            _facts.value = response.content
             saveHistory()
-            
         } catch (e: Exception) {
-            println("Compression failed: ${e.message}")
-        } finally {
-            _isCompressing.value = false
+            // ignore
         }
     }
     
@@ -261,10 +280,20 @@ class OpenAiAgent(
 
     fun clearChat() {
         _messages.value = emptyList()
-        _summary.value = ""
-        _summarizedToIndex.value = 0
+        _facts.value = ""
+        _branches.value = mapOf("Main" to emptyList())
+        _currentBranchId.value = "Main"
         _lastUsage.value = null
         _totalUsage.value = TokenUsage(0, 0, 0)
         saveHistory()
     }
 }
+
+@Serializable
+data class AgentPersistedData(
+    val branches: Map<String, List<ChatMessage>>,
+    val currentBranchId: String,
+    val facts: String,
+    val strategy: ContextStrategy,
+    val totalUsage: TokenUsage
+)
