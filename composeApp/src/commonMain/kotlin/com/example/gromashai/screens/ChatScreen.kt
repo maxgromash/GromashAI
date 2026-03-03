@@ -1,7 +1,6 @@
 package com.example.gromashai.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -10,16 +9,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.gromashai.openai.*
 import kotlinx.coroutines.launch
 
@@ -32,7 +27,8 @@ fun ChatScreen(agent: OpenAiAgent) {
     val totalUsage by agent.totalUsage.collectAsState()
     
     val strategy by agent.strategy.collectAsState()
-    val facts by agent.facts.collectAsState()
+    val workingMemory by agent.workingMemory.collectAsState()
+    val longTermMemory by agent.longTermMemory.collectAsState()
     val branches by agent.branches.collectAsState()
     val currentBranchId by agent.currentBranchId.collectAsState()
 
@@ -43,19 +39,16 @@ fun ChatScreen(agent: OpenAiAgent) {
     var expandedStrategyMenu by remember { mutableStateOf(false) }
     var expandedBranchMenu by remember { mutableStateOf(false) }
     
-    var showFacts by remember { mutableStateOf(false) }
+    var showMemoryLayers by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         
-        // --- Control Panel ---
+        // --- Панель управления ---
         Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(8.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                // Model and Total Tokens
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Model:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
                     Box {
@@ -80,7 +73,6 @@ fun ChatScreen(agent: OpenAiAgent) {
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                // Strategy and Branching
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Strategy:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
                     Box {
@@ -129,39 +121,29 @@ fun ChatScreen(agent: OpenAiAgent) {
                     }
                 }
 
-                if (strategy == ContextStrategy.STICKY_FACTS) {
+                // --- Секция Memory Layers ---
+                if (strategy == ContextStrategy.MULTI_LAYER_MEMORY || strategy == ContextStrategy.STICKY_FACTS) {
                     Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = if (showFacts) "▼ Скрыть факты" else "▶ Показать факты",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.clickable { showFacts = !showFacts }
-                        )
-                    }
-                    AnimatedVisibility(visible = showFacts) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.surface,
-                            shape = RoundedCornerShape(4.dp),
-                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-                        ) {
-                            Text(
-                                text = facts.ifBlank { "Фактов пока нет..." },
-                                style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier.padding(8.dp)
-                            )
+                    Text(
+                        text = if (showMemoryLayers) "▼ Скрыть слои памяти" else "▶ Показать слои памяти",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { showMemoryLayers = !showMemoryLayers }
+                    )
+                    
+                    AnimatedVisibility(visible = showMemoryLayers) {
+                        Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                            MemoryLayerItem("Рабочая (Задачи/Факты)", workingMemory)
+                            MemoryLayerItem("Долговременная (Профиль)", longTermMemory)
                         }
                     }
                 }
             }
         }
 
-        // --- Chat Messages ---
+        // --- Список сообщений ---
         LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp),
             contentPadding = PaddingValues(vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -178,11 +160,9 @@ fun ChatScreen(agent: OpenAiAgent) {
             }
         }
 
-        // --- Input Area ---
+        // --- Ввод сообщения ---
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             OutlinedTextField(
@@ -197,14 +177,26 @@ fun ChatScreen(agent: OpenAiAgent) {
                 onClick = {
                     val textToSend = inputText
                     inputText = ""
-                    scope.launch {
-                        agent.sendQuery(textToSend)
-                    }
+                    scope.launch { agent.sendQuery(textToSend) }
                 },
                 enabled = !isLoading && inputText.isNotBlank()
             ) {
                 Text("Отправить")
             }
+        }
+    }
+}
+
+@Composable
+fun MemoryLayerItem(title: String, content: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(4.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(6.dp)) {
+            Text(title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+            Text(content.ifBlank { "(Пусто)" }, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -221,8 +213,7 @@ fun ChatBubble(message: ChatMessage) {
             Surface(
                 color = bgColor,
                 shape = RoundedCornerShape(
-                    topStart = 12.dp,
-                    topEnd = 12.dp,
+                    topStart = 12.dp, topEnd = 12.dp,
                     bottomStart = if (isUser) 12.dp else 0.dp,
                     bottomEnd = if (isUser) 0.dp else 12.dp
                 ),
@@ -237,7 +228,6 @@ fun ChatBubble(message: ChatMessage) {
                     )
                 }
             }
-            
             if (!isUser && message.usage != null) {
                 Text(
                     text = "${message.usage.totalTokens} tokens",

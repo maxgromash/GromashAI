@@ -75,7 +75,7 @@ fun App(context: Any? = null) {
                 openAiApi = openAiApi,
                 hfApi = hfApi,
                 storage = settings,
-                initialSystemPrompt = "Ты опытный Android-разработчик. Ответ не более 1 предложения, остальное - код, если требуется."
+                initialSystemPrompt = "Ты — универсальный помощник. Твоя задача — давать четкие, лаконичные и полезные ответы на любые вопросы пользователя. Если требуется, будь краток."
             ) 
         }
         

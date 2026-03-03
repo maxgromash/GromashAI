@@ -11,11 +11,16 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 enum class ContextStrategy {
     SLIDING_WINDOW,
     STICKY_FACTS,
-    BRANCHING
+    BRANCHING,
+    MULTI_LAYER_MEMORY
 }
 
 /**
@@ -29,11 +34,10 @@ data class ChatMessage(
 )
 
 /**
- * Агент — это отдельная сущность, инкапсулирующая логику общения с LLM.
- * Поддерживает 3 стратегии контекста:
- * 1. Sliding Window (последние N сообщений)
- * 2. Sticky Facts (факты + последние N сообщений)
- * 3. Branching (ветвление диалогов)
+ * Агент с многослойной моделью памяти:
+ * 1. Краткосрочная (Short-term): Текущий список сообщений (sliding window).
+ * 2. Рабочая (Working): Факты и данные текущей задачи.
+ * 3. Долговременная (Long-term): Профиль пользователя, устойчивые предпочтения.
  */
 class OpenAiAgent(
     private val openAiApi: OpenAiApi,
@@ -44,27 +48,28 @@ class OpenAiAgent(
     private val _systemPrompt = MutableStateFlow(initialSystemPrompt)
     val systemPrompt: StateFlow<String> = _systemPrompt.asStateFlow()
 
-    // Вся история сообщений текущей ветки
+    // --- 1. Краткосрочная память (Short-term) ---
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
-    // --- Strategy ---
-    private val _strategy = MutableStateFlow(ContextStrategy.SLIDING_WINDOW)
+    // --- 2. Рабочая память (Working) ---
+    private val _workingMemory = MutableStateFlow("")
+    val workingMemory: StateFlow<String> = _workingMemory.asStateFlow()
+
+    // --- 3. Долговременная память (Long-term) ---
+    private val _longTermMemory = MutableStateFlow("")
+    val longTermMemory: StateFlow<String> = _longTermMemory.asStateFlow()
+
+    // --- Strategy & State ---
+    private val _strategy = MutableStateFlow(ContextStrategy.MULTI_LAYER_MEMORY)
     val strategy: StateFlow<ContextStrategy> = _strategy.asStateFlow()
 
-    // --- Sticky Facts ---
-    private val _facts = MutableStateFlow("")
-    val facts: StateFlow<String> = _facts.asStateFlow()
-
-    // --- Branching ---
-    // Хранит историю для каждой ветки: Map<BranchID, List<ChatMessage>>
     private val _branches = MutableStateFlow<Map<String, List<ChatMessage>>>(mapOf("Main" to emptyList()))
     val branches: StateFlow<Map<String, List<ChatMessage>>> = _branches.asStateFlow()
     
     private val _currentBranchId = MutableStateFlow("Main")
     val currentBranchId: StateFlow<String> = _currentBranchId.asStateFlow()
 
-    // --- Common ---
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -77,12 +82,10 @@ class OpenAiAgent(
     private val _totalUsage = MutableStateFlow(TokenUsage(0, 0, 0))
     val totalUsage: StateFlow<TokenUsage> = _totalUsage.asStateFlow()
 
-    private val json = Json { ignoreUnknownKeys = true }
-    private val HISTORY_KEY = "chat_history_agent_v3"
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true; prettyPrint = true }
+    private val HISTORY_KEY = "chat_history_agent_v4"
     
-    // Config
-    private val SLIDING_WINDOW_SIZE = 4
-    private val FACTS_WINDOW_SIZE = 15
+    private val SHORT_TERM_WINDOW = 4
 
     init {
         loadHistory()
@@ -101,7 +104,8 @@ class OpenAiAgent(
                 _branches.value = data.branches
                 _currentBranchId.value = data.currentBranchId
                 _messages.value = data.branches[data.currentBranchId] ?: emptyList()
-                _facts.value = data.facts
+                _workingMemory.value = data.workingMemory
+                _longTermMemory.value = data.longTermMemory
                 _strategy.value = data.strategy
                 _totalUsage.value = data.totalUsage
             } catch (e: Exception) {
@@ -111,7 +115,6 @@ class OpenAiAgent(
     }
 
     private fun saveHistory() {
-        // Перед сохранением обновляем текущую ветку в мапе
         val currentMap = _branches.value.toMutableMap()
         currentMap[_currentBranchId.value] = _messages.value
         _branches.value = currentMap
@@ -120,7 +123,8 @@ class OpenAiAgent(
             val data = AgentPersistedData(
                 branches = _branches.value,
                 currentBranchId = _currentBranchId.value,
-                facts = _facts.value,
+                workingMemory = _workingMemory.value,
+                longTermMemory = _longTermMemory.value,
                 strategy = _strategy.value,
                 totalUsage = _totalUsage.value
             )
@@ -138,26 +142,19 @@ class OpenAiAgent(
         _currentModel.value = model
     }
     
-    // --- Branching Logic ---
     fun createBranch() {
         val newId = "Branch ${_branches.value.size + 1}"
-        val currentHistory = _messages.value
-        
         val newMap = _branches.value.toMutableMap()
-        newMap[newId] = currentHistory 
+        newMap[newId] = _messages.value
         _branches.value = newMap
-        
         switchBranch(newId)
     }
     
     fun switchBranch(branchId: String) {
         if (!_branches.value.containsKey(branchId)) return
-        
-        val oldId = _currentBranchId.value
         val map = _branches.value.toMutableMap()
-        map[oldId] = _messages.value
+        map[_currentBranchId.value] = _messages.value
         _branches.value = map
-        
         _currentBranchId.value = branchId
         _messages.value = map[branchId] ?: emptyList()
         saveHistory()
@@ -168,18 +165,13 @@ class OpenAiAgent(
         
         val userMsg = ChatMessage(role = "user", content = text)
         _messages.value = _messages.value + userMsg
-        
-        val map = _branches.value.toMutableMap()
-        map[_currentBranchId.value] = _messages.value
-        _branches.value = map
-        
         saveHistory()
         
         _isLoading.value = true
-        _lastUsage.value = null 
         
-        if (_strategy.value == ContextStrategy.STICKY_FACTS) {
-            updateFacts(text)
+        // В стратегии Multi-Layer или Sticky Facts обновляем слои памяти
+        if (_strategy.value == ContextStrategy.MULTI_LAYER_MEMORY || _strategy.value == ContextStrategy.STICKY_FACTS) {
+            updateMemoryLayers(text)
         }
         
         try {
@@ -191,99 +183,125 @@ class OpenAiAgent(
                 ModelProvider.HUGGING_FACE -> hfApi.chat(contextMessages, model.id)
             }
             
-            val assistantMsg = ChatMessage(
-                role = "assistant", 
-                content = response.content,
-                usage = response.usage
-            )
+            val assistantMsg = ChatMessage(role = "assistant", content = response.content, usage = response.usage)
             _messages.value = _messages.value + assistantMsg
-            
-            val mapAfter = _branches.value.toMutableMap()
-            mapAfter[_currentBranchId.value] = _messages.value
-            _branches.value = mapAfter
             
             if (response.usage != null) {
                 _lastUsage.value = response.usage
                 updateTotalUsage(response.usage)
             }
-            
             saveHistory()
-
         } catch (e: Exception) {
-            val errorMsg = ChatMessage(role = "assistant", content = "Ошибка: ${e.message}")
-            _messages.value = _messages.value + errorMsg
+             _messages.value = _messages.value + ChatMessage(role = "assistant", content = "Ошибка: ${e.message}")
         } finally {
             _isLoading.value = false
         }
     }
     
     private fun prepareContextMessages(): List<ChatMessage> {
-        val allMessages = _messages.value
         val sysPrompt = _systemPrompt.value
-        
         return when (_strategy.value) {
             ContextStrategy.SLIDING_WINDOW -> {
-                val window = allMessages.takeLast(SLIDING_WINDOW_SIZE)
-                listOf(ChatMessage("system", sysPrompt)) + window
+                listOf(ChatMessage("system", sysPrompt)) + _messages.value.takeLast(SHORT_TERM_WINDOW)
             }
-            ContextStrategy.STICKY_FACTS -> {
-                val factsText = _facts.value.ifBlank { "Нет известных фактов." }
+            ContextStrategy.STICKY_FACTS, ContextStrategy.MULTI_LAYER_MEMORY -> {
+                val working = _workingMemory.value.ifBlank { "Пусто." }
+                val longTerm = _longTermMemory.value.ifBlank { "Пусто." }
+                
                 val augmentedSystem = """
                     $sysPrompt
                     
-                    [ВАЖНЫЕ ФАКТЫ И КОНТЕКСТ]:
-                    $factsText
+                    [ТЕКУЩАЯ РАБОЧАЯ ПАМЯТЬ (Контекст задачи)]:
+                    $working
+                    
+                    [ДОЛГОВРЕМЕННАЯ ПАМЯТЬ (Профиль пользователя)]:
+                    $longTerm
                 """.trimIndent()
                 
-                val window = allMessages.takeLast(FACTS_WINDOW_SIZE)
-                listOf(ChatMessage("system", augmentedSystem)) + window
+                listOf(ChatMessage("system", augmentedSystem)) + _messages.value.takeLast(SHORT_TERM_WINDOW)
             }
             ContextStrategy.BRANCHING -> {
-                listOf(ChatMessage("system", sysPrompt)) + allMessages
+                listOf(ChatMessage("system", sysPrompt)) + _messages.value
             }
         }
     }
     
-    private suspend fun updateFacts(userText: String) {
-        val currentFacts = _facts.value
-        val prompt = """
-            Проанализируй сообщение пользователя и обнови список фактов.
-            Факты - это важные данные: цели, ограничения, предпочтения, решения.
-            
-            Текущие факты:
-            ${if (currentFacts.isBlank()) "(Нет)" else currentFacts}
-            
-            Сообщение:
-            $userText
-            
-            Верни обновленный список фактов на РУССКОМ языке. Будь краток.
-        """.trimIndent()
+    private suspend fun updateMemoryLayers(userText: String) {
+        val memoryMessages = listOf(
+            ChatMessage("system", """
+                Ты — экспертная система управления контекстом и профилирования.
+                Твоя задача — обновлять два слоя памяти на основе сообщений.
+                
+                ИНСТРУКЦИЯ ПО КЛАССИФИКАЦИИ:
+                1. longTerm (Долговременная): Имя пользователя, его профессия, постоянные интересы, место жительства, личные факты. ВСЁ, ЧТО ХАРАКТЕРИЗУЕТ ЛИЧНОСТЬ. (Например: "Марк", "Маркетолог").
+                2. working (Рабочая): Детали текущего обсуждения, название текущего проекта, временные цели сессии, параметры текущей задачи. (Например: "Проект SwiftRide", "План рекламной кампании").
+                
+                ТРЕБОВАНИЯ К ФОРМАТУ:
+                - Отвечай ТОЛЬКО чистым JSON с полями "working" и "longTerm".
+                - ЗНАЧЕНИЯ ПОЛЕЙ ДОЛЖНЫ БЫТЬ СТРОКАМИ. Не используй вложенные объекты.
+                - Пиши на РУССКОМ языке.
+            """.trimIndent()),
+            ChatMessage("user", """
+                Обнови слои памяти на основе сообщения пользователя: "$userText"
+                
+                Текущее состояние:
+                Working: ${_workingMemory.value}
+                Long-term: ${_longTermMemory.value}
+                
+                Верни ОБНОВЛЕННЫЙ JSON целиком (старая инфо + новые факты).
+            """.trimIndent())
+        )
         
         try {
-            val response = openAiApi.chat(listOf(ChatMessage("user", prompt)), "gpt-4o")
-            _facts.value = response.content
-            saveHistory()
+            val response = openAiApi.chat(
+                messages = memoryMessages,
+                model = "gpt-4o",
+                jsonMode = true
+            )
+            
+            val jsonText = response.content
+                .replace("```json", "")
+                .replace("```", "")
+                .trim()
+            
+            // Парсим гибко через JsonElement, чтобы не падать на объектах
+            val root = json.parseToJsonElement(jsonText) as? JsonObject
+            if (root != null) {
+                val workingElement = root["working"]
+                val longTermElement = root["longTerm"]
+                
+                _workingMemory.value = elementToString(workingElement) ?: _workingMemory.value
+                _longTermMemory.value = elementToString(longTermElement) ?: _longTermMemory.value
+                saveHistory()
+            }
         } catch (e: Exception) {
-            // ignore
+            println("Extraction error: ${e.message}")
         }
     }
     
+    private fun elementToString(el: JsonElement?): String? {
+        return when (el) {
+            is JsonPrimitive -> el.contentOrNull ?: el.toString()
+            is JsonObject -> json.encodeToString(el) // Если модель всё же вернула объект, превратим его в текст
+            else -> null
+        }
+    }
+
     private fun updateTotalUsage(newUsage: TokenUsage) {
         val current = _totalUsage.value
-        val newTotal = TokenUsage(
+        _totalUsage.value = TokenUsage(
             promptTokens = current.promptTokens + newUsage.promptTokens,
             completionTokens = current.completionTokens + newUsage.completionTokens,
             totalTokens = current.totalTokens + newUsage.totalTokens
         )
-        _totalUsage.value = newTotal
     }
 
     fun clearChat() {
         _messages.value = emptyList()
-        _facts.value = ""
+        _workingMemory.value = ""
+        _longTermMemory.value = ""
         _branches.value = mapOf("Main" to emptyList())
         _currentBranchId.value = "Main"
-        _lastUsage.value = null
         _totalUsage.value = TokenUsage(0, 0, 0)
         saveHistory()
     }
@@ -293,7 +311,8 @@ class OpenAiAgent(
 data class AgentPersistedData(
     val branches: Map<String, List<ChatMessage>>,
     val currentBranchId: String,
-    val facts: String,
+    val workingMemory: String,
+    val longTermMemory: String,
     val strategy: ContextStrategy,
     val totalUsage: TokenUsage
 )

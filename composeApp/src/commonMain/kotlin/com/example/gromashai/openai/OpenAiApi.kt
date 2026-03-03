@@ -13,13 +13,25 @@ class OpenAiApi(
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * Универсальный метод для чата, принимающий список сообщений (включая системные и историю).
+     * Универсальный метод для чата.
+     * @param jsonMode если true, заставляет модель отвечать валидным JSON объектом.
      */
-    suspend fun chat(messages: List<ChatMessage>, model: String = "gpt-4o"): AgentResponse {
+    suspend fun chat(
+        messages: List<ChatMessage>, 
+        model: String = "gpt-4o",
+        jsonMode: Boolean = false
+    ): AgentResponse {
         val apiKey = apiKeyProvider.getOpenAiKey()
         
         val bodyJson = buildJsonObject {
             put("model", JsonPrimitive(model))
+            
+            if (jsonMode) {
+                put("response_format", buildJsonObject {
+                    put("type", JsonPrimitive("json_object"))
+                })
+            }
+
             put("messages", buildJsonArray {
                 messages.forEach { msg ->
                     add(buildJsonObject {
@@ -193,7 +205,7 @@ class OpenAiApi(
             })
         }
 
-        val resp: JsonObject = http.post("https://api.openai.com/v1/responses") {
+        val resp: JsonObject = http.post("https://api.openai.com/v1/chat/completions") {
             header(HttpHeaders.Authorization, "Bearer $apiKey")
             contentType(ContentType.Application.Json)
             setBody(bodyJson)
