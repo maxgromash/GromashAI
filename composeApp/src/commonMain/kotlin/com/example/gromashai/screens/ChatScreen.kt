@@ -9,6 +9,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,6 +31,8 @@ fun ChatScreen(agent: OpenAiAgent) {
     val strategy by agent.strategy.collectAsState()
     val workingMemory by agent.workingMemory.collectAsState()
     val longTermMemory by agent.longTermMemory.collectAsState()
+    val userProfile by agent.userProfile.collectAsState()
+    
     val branches by agent.branches.collectAsState()
     val currentBranchId by agent.currentBranchId.collectAsState()
 
@@ -40,6 +44,7 @@ fun ChatScreen(agent: OpenAiAgent) {
     var expandedBranchMenu by remember { mutableStateOf(false) }
     
     var showMemoryLayers by remember { mutableStateOf(false) }
+    var showProfileEditor by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         
@@ -68,7 +73,14 @@ fun ChatScreen(agent: OpenAiAgent) {
                         }
                     }
                     Spacer(Modifier.weight(1f))
-                    Text("Total: ${totalUsage.totalTokens} tok", style = MaterialTheme.typography.labelSmall)
+                    
+                    // Кнопка профиля
+                    IconButton(onClick = { showProfileEditor = true }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.Person, contentDescription = "Profile", tint = MaterialTheme.colorScheme.primary)
+                    }
+                    
+                    Spacer(Modifier.width(8.dp))
+                    Text("${totalUsage.totalTokens} tok", style = MaterialTheme.typography.labelSmall)
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -185,6 +197,47 @@ fun ChatScreen(agent: OpenAiAgent) {
             }
         }
     }
+
+    // --- Диалог редактирования профиля ---
+    if (showProfileEditor) {
+        ProfileEditorDialog(
+            currentProfile = userProfile,
+            onDismiss = { showProfileEditor = false },
+            onSave = { updatedProfile ->
+                agent.updateUserProfile(updatedProfile)
+                showProfileEditor = false
+            }
+        )
+    }
+}
+
+@Composable
+fun ProfileEditorDialog(
+    currentProfile: UserProfile,
+    onDismiss: () -> Unit,
+    onSave: (UserProfile) -> Unit
+) {
+    var style by remember { mutableStateOf(currentProfile.style) }
+    var format by remember { mutableStateOf(currentProfile.format) }
+    var constraints by remember { mutableStateOf(currentProfile.constraints) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Профиль и предпочтения") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value = style, onValueChange = { style = it }, label = { Text("Стиль (напр. Офиц.)") })
+                OutlinedTextField(value = format, onValueChange = { format = it }, label = { Text("Формат (напр. Списки)") })
+                OutlinedTextField(value = constraints, onValueChange = { constraints = it }, label = { Text("Ограничения (напр. Без эмодзи)") })
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(UserProfile(style, format, constraints)) }) { Text("Сохранить") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        }
+    )
 }
 
 @Composable
