@@ -65,7 +65,7 @@ data class ChatMessage(
 )
 
 /**
- * Агент с многослойной моделью памяти, персонализацией и машиной состояний задачи.
+ * Агент с многослойной моделью памяти, персонализацией, машиной состояний задачи и инвариантами.
  */
 class OpenAiAgent(
     private val openAiApi: OpenAiApi,
@@ -75,6 +75,10 @@ class OpenAiAgent(
 ) {
     private val _systemPrompt = MutableStateFlow(initialSystemPrompt)
     val systemPrompt: StateFlow<String> = _systemPrompt.asStateFlow()
+
+    // --- Инварианты (Ограничения) ---
+    private val _invariants = MutableStateFlow("")
+    val invariants: StateFlow<String> = _invariants.asStateFlow()
 
     // --- Состояние задачи (TSM) ---
     private val _taskState = MutableStateFlow(TaskState())
@@ -119,7 +123,7 @@ class OpenAiAgent(
     val totalUsage: StateFlow<TokenUsage> = _totalUsage.asStateFlow()
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true; prettyPrint = true }
-    private val HISTORY_KEY = "chat_history_agent_v6"
+    private val HISTORY_KEY = "chat_history_agent_v7"
     
     private val SHORT_TERM_WINDOW = 4
 
@@ -137,6 +141,11 @@ class OpenAiAgent(
         saveHistory()
     }
 
+    fun updateInvariants(newInvariants: String) {
+        _invariants.value = newInvariants
+        saveHistory()
+    }
+
     private fun loadHistory() {
         val saved = storage.getString(HISTORY_KEY)
         if (!saved.isNullOrBlank()) {
@@ -151,6 +160,7 @@ class OpenAiAgent(
                 _totalUsage.value = data.totalUsage
                 _userProfile.value = data.userProfile ?: UserProfile()
                 _taskState.value = data.taskState ?: TaskState()
+                _invariants.value = data.invariants ?: ""
             } catch (e: Exception) {
                 _messages.value = emptyList()
             }
@@ -171,7 +181,8 @@ class OpenAiAgent(
                 strategy = _strategy.value,
                 totalUsage = _totalUsage.value,
                 userProfile = _userProfile.value,
-                taskState = _taskState.value
+                taskState = _taskState.value,
+                invariants = _invariants.value
             )
             storage.putString(HISTORY_KEY, json.encodeToString(data))
         } catch (e: Exception) {
@@ -210,7 +221,6 @@ class OpenAiAgent(
         
         _isLoading.value = true
         
-        // В режиме MULTI_LAYER_MEMORY обновляем всё: память и состояние задачи
         if (_strategy.value == ContextStrategy.MULTI_LAYER_MEMORY) {
             updateContext(text)
         }
@@ -243,8 +253,18 @@ class OpenAiAgent(
         val sysPrompt = _systemPrompt.value
         val profile = _userProfile.value
         val task = _taskState.value
+        val invariantsText = _invariants.value
         
-        // Добавляем текущее состояние задачи в системный промпт
+        // Инварианты — это жесткие ограничения
+        val invariantsPrompt = if (invariantsText.isNotBlank()) {
+            """
+                [ЖЕСТКИЕ ИНВАРИАНТЫ И ОГРАНИЧЕНИЯ]:
+                $invariantsText
+                
+                ВАЖНО: Ты НЕ ИМЕЕШЬ ПРАВА предлагать решения или совершать действия, нарушающие эти инварианты. Если пользователь просит нарушить их, вежливо откажи и объясни причину, ссылаясь на установленные ограничения.
+            """.trimIndent()
+        } else ""
+
         val statePrompt = """
             [ТЕКУЩЕЕ СОСТОЯНИЕ ЗАДАЧИ]:
             - Этап: ${task.stage}
@@ -252,25 +272,27 @@ class OpenAiAgent(
             - Ожидаемое действие: ${task.expectedAction}
         """.trimIndent()
 
-        val personalizedPrompt = """
+        val fullSystemPrompt = """
             $sysPrompt
             
             [ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ]:
             - Стиль: ${profile.style}, Формат: ${profile.format}, Ограничения: ${profile.constraints}
+            
+            $invariantsPrompt
             
             $statePrompt
         """.trimIndent()
 
         return when (_strategy.value) {
             ContextStrategy.SLIDING_WINDOW -> {
-                listOf(ChatMessage("system", personalizedPrompt)) + _messages.value.takeLast(SHORT_TERM_WINDOW)
+                listOf(ChatMessage("system", fullSystemPrompt)) + _messages.value.takeLast(SHORT_TERM_WINDOW)
             }
             ContextStrategy.STICKY_FACTS, ContextStrategy.MULTI_LAYER_MEMORY -> {
                 val working = _workingMemory.value.ifBlank { "Пусто." }
                 val longTerm = _longTermMemory.value.ifBlank { "Пусто." }
                 
                 val augmentedSystem = """
-                    $personalizedPrompt
+                    $fullSystemPrompt
                     
                     [РАБОЧАЯ ПАМЯТЬ]: $working
                     [ДОЛГОВРЕМЕННАЯ ПАМЯТЬ]: $longTerm
@@ -279,14 +301,11 @@ class OpenAiAgent(
                 listOf(ChatMessage("system", augmentedSystem)) + _messages.value.takeLast(SHORT_TERM_WINDOW)
             }
             ContextStrategy.BRANCHING -> {
-                listOf(ChatMessage("system", personalizedPrompt)) + _messages.value
+                listOf(ChatMessage("system", fullSystemPrompt)) + _messages.value
             }
         }
     }
     
-    /**
-     * Комплексное обновление контекста: Память + Task State Machine.
-     */
     private suspend fun updateContext(userText: String) {
         val prompt = """
             Обнови контекст и состояние задачи. 
@@ -294,16 +313,10 @@ class OpenAiAgent(
             ТЕКУЩИЕ ДАННЫЕ:
             Memory Working: ${_workingMemory.value}
             Memory Long-term: ${_longTermMemory.value}
+            Invariants: ${_invariants.value}
             Task State: [Stage: ${_taskState.value.stage}, Step: ${_taskState.value.step}, Action: ${_taskState.value.expectedAction}]
             
             Message: "$userText"
-            
-            Инструкция для Task Stage:
-            - PLANNING: Если обсуждаете план или ТЗ.
-            - EXECUTION: Если выполняете конкретные шаги.
-            - VALIDATION: Если проверяете результат.
-            - DONE: Если задача завершена.
-            - IDLE: Если задачи нет.
             
             Верни JSON:
             {
@@ -358,6 +371,7 @@ class OpenAiAgent(
         _messages.value = emptyList()
         _workingMemory.value = ""
         _longTermMemory.value = ""
+        _invariants.value = ""
         _taskState.value = TaskState()
         _branches.value = mapOf("Main" to emptyList())
         _currentBranchId.value = "Main"
@@ -375,5 +389,6 @@ data class AgentPersistedData(
     val strategy: ContextStrategy,
     val totalUsage: TokenUsage,
     val userProfile: UserProfile? = null,
-    val taskState: TaskState? = null
+    val taskState: TaskState? = null,
+    val invariants: String? = null
 )

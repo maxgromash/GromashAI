@@ -10,6 +10,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Assignment
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,7 +18,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.gromashai.openai.*
 import kotlinx.coroutines.launch
 
@@ -31,6 +31,7 @@ fun ChatScreen(agent: OpenAiAgent) {
     val strategy by agent.strategy.collectAsState()
     val workingMemory by agent.workingMemory.collectAsState()
     val longTermMemory by agent.longTermMemory.collectAsState()
+    val invariants by agent.invariants.collectAsState()
     val userProfile by agent.userProfile.collectAsState()
     val taskState by agent.taskState.collectAsState()
     
@@ -46,6 +47,7 @@ fun ChatScreen(agent: OpenAiAgent) {
     
     var showContextDetails by remember { mutableStateOf(false) }
     var showProfileEditor by remember { mutableStateOf(false) }
+    var showInvariantsEditor by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         
@@ -75,6 +77,14 @@ fun ChatScreen(agent: OpenAiAgent) {
                     }
                     Spacer(Modifier.weight(1f))
                     
+                    // Кнопка инвариантов
+                    IconButton(onClick = { showInvariantsEditor = true }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.Lock, contentDescription = "Invariants", tint = MaterialTheme.colorScheme.secondary)
+                    }
+                    
+                    Spacer(Modifier.width(8.dp))
+
+                    // Кнопка профиля
                     IconButton(onClick = { showProfileEditor = true }, modifier = Modifier.size(24.dp)) {
                         Icon(Icons.Default.Person, contentDescription = "Profile", tint = MaterialTheme.colorScheme.primary)
                     }
@@ -156,6 +166,7 @@ fun ChatScreen(agent: OpenAiAgent) {
                     
                     AnimatedVisibility(visible = showContextDetails) {
                         Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                            MemoryLayerItem("Инварианты (Жесткие ограничения)", invariants)
                             MemoryLayerItem("Рабочая память", workingMemory)
                             MemoryLayerItem("Долговременная память", longTermMemory)
                             MemoryLayerItem("Ожидаемое действие", taskState.expectedAction)
@@ -220,6 +231,17 @@ fun ChatScreen(agent: OpenAiAgent) {
             }
         )
     }
+
+    if (showInvariantsEditor) {
+        InvariantsEditorDialog(
+            currentInvariants = invariants,
+            onDismiss = { showInvariantsEditor = false },
+            onSave = { updatedInvariants ->
+                agent.updateInvariants(updatedInvariants)
+                showInvariantsEditor = false
+            }
+        )
+    }
 }
 
 @Composable
@@ -244,6 +266,37 @@ fun ProfileEditorDialog(
         },
         confirmButton = {
             Button(onClick = { onSave(UserProfile(style, format, constraints)) }) { Text("Сохранить") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        }
+    )
+}
+
+@Composable
+fun InvariantsEditorDialog(
+    currentInvariants: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var text by remember { mutableStateOf(currentInvariants) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Жесткие инварианты") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Ограничения, которые ассистент не имеет права нарушать (стек, архитектура, правила).", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = text, 
+                    onValueChange = { text = it }, 
+                    modifier = Modifier.fillMaxWidth().height(150.dp),
+                    placeholder = { Text("Напр: Используем только KMP, архитектура MVVM, не используем библиотеку X...") }
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(text) }) { Text("Сохранить") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Отмена") }
