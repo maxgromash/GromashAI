@@ -9,14 +9,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.gromashai.openai.*
 import kotlinx.coroutines.launch
 
@@ -25,13 +26,13 @@ fun ChatScreen(agent: OpenAiAgent) {
     val messages by agent.messages.collectAsState()
     val isLoading by agent.isLoading.collectAsState()
     val currentModel by agent.currentModel.collectAsState()
-    val lastUsage by agent.lastUsage.collectAsState()
     val totalUsage by agent.totalUsage.collectAsState()
     
     val strategy by agent.strategy.collectAsState()
     val workingMemory by agent.workingMemory.collectAsState()
     val longTermMemory by agent.longTermMemory.collectAsState()
     val userProfile by agent.userProfile.collectAsState()
+    val taskState by agent.taskState.collectAsState()
     
     val branches by agent.branches.collectAsState()
     val currentBranchId by agent.currentBranchId.collectAsState()
@@ -43,7 +44,7 @@ fun ChatScreen(agent: OpenAiAgent) {
     var expandedStrategyMenu by remember { mutableStateOf(false) }
     var expandedBranchMenu by remember { mutableStateOf(false) }
     
-    var showMemoryLayers by remember { mutableStateOf(false) }
+    var showContextDetails by remember { mutableStateOf(false) }
     var showProfileEditor by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -74,13 +75,23 @@ fun ChatScreen(agent: OpenAiAgent) {
                     }
                     Spacer(Modifier.weight(1f))
                     
-                    // Кнопка профиля
                     IconButton(onClick = { showProfileEditor = true }, modifier = Modifier.size(24.dp)) {
                         Icon(Icons.Default.Person, contentDescription = "Profile", tint = MaterialTheme.colorScheme.primary)
                     }
                     
                     Spacer(Modifier.width(8.dp))
                     Text("${totalUsage.totalTokens} tok", style = MaterialTheme.typography.labelSmall)
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                // --- Task State Indicator ---
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Assignment, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.secondary)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Task: ", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    Text(taskState.stage.name, color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelSmall)
+                    Text(" | Step: ${taskState.step}", style = MaterialTheme.typography.labelSmall, maxLines = 1)
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -133,20 +144,21 @@ fun ChatScreen(agent: OpenAiAgent) {
                     }
                 }
 
-                // --- Секция Memory Layers ---
+                // --- Секция Memory Layers & Task Details ---
                 if (strategy == ContextStrategy.MULTI_LAYER_MEMORY || strategy == ContextStrategy.STICKY_FACTS) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = if (showMemoryLayers) "▼ Скрыть слои памяти" else "▶ Показать слои памяти",
+                        text = if (showContextDetails) "▼ Скрыть детали контекста" else "▶ Показать детали контекста",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { showMemoryLayers = !showMemoryLayers }
+                        modifier = Modifier.clickable { showContextDetails = !showContextDetails }
                     )
                     
-                    AnimatedVisibility(visible = showMemoryLayers) {
+                    AnimatedVisibility(visible = showContextDetails) {
                         Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                            MemoryLayerItem("Рабочая (Задачи/Факты)", workingMemory)
-                            MemoryLayerItem("Долговременная (Профиль)", longTermMemory)
+                            MemoryLayerItem("Рабочая память", workingMemory)
+                            MemoryLayerItem("Долговременная память", longTermMemory)
+                            MemoryLayerItem("Ожидаемое действие", taskState.expectedAction)
                         }
                     }
                 }
@@ -198,7 +210,6 @@ fun ChatScreen(agent: OpenAiAgent) {
         }
     }
 
-    // --- Диалог редактирования профиля ---
     if (showProfileEditor) {
         ProfileEditorDialog(
             currentProfile = userProfile,

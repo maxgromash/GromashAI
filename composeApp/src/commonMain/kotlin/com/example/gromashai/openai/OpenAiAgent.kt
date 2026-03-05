@@ -24,6 +24,27 @@ enum class ContextStrategy {
 }
 
 /**
+ * Этапы выполнения задачи.
+ */
+enum class TaskStage {
+    IDLE,       // Ожидание задачи
+    PLANNING,   // Планирование
+    EXECUTION,  // Выполнение
+    VALIDATION, // Проверка
+    DONE        // Завершено
+}
+
+/**
+ * Состояние текущей задачи.
+ */
+@Serializable
+data class TaskState(
+    val stage: TaskStage = TaskStage.IDLE,
+    val step: String = "Нет активного шага",
+    val expectedAction: String = "Ожидание ввода пользователя"
+)
+
+/**
  * Профиль пользователя для персонализации.
  */
 @Serializable
@@ -44,7 +65,7 @@ data class ChatMessage(
 )
 
 /**
- * Агент с многослойной моделью памяти и персонализацией.
+ * Агент с многослойной моделью памяти, персонализацией и машиной состояний задачи.
  */
 class OpenAiAgent(
     private val openAiApi: OpenAiApi,
@@ -54,6 +75,10 @@ class OpenAiAgent(
 ) {
     private val _systemPrompt = MutableStateFlow(initialSystemPrompt)
     val systemPrompt: StateFlow<String> = _systemPrompt.asStateFlow()
+
+    // --- Состояние задачи (TSM) ---
+    private val _taskState = MutableStateFlow(TaskState())
+    val taskState: StateFlow<TaskState> = _taskState.asStateFlow()
 
     // --- Персонализация ---
     private val _userProfile = MutableStateFlow(UserProfile())
@@ -94,7 +119,7 @@ class OpenAiAgent(
     val totalUsage: StateFlow<TokenUsage> = _totalUsage.asStateFlow()
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true; prettyPrint = true }
-    private val HISTORY_KEY = "chat_history_agent_v5"
+    private val HISTORY_KEY = "chat_history_agent_v6"
     
     private val SHORT_TERM_WINDOW = 4
 
@@ -125,6 +150,7 @@ class OpenAiAgent(
                 _strategy.value = data.strategy
                 _totalUsage.value = data.totalUsage
                 _userProfile.value = data.userProfile ?: UserProfile()
+                _taskState.value = data.taskState ?: TaskState()
             } catch (e: Exception) {
                 _messages.value = emptyList()
             }
@@ -144,7 +170,8 @@ class OpenAiAgent(
                 longTermMemory = _longTermMemory.value,
                 strategy = _strategy.value,
                 totalUsage = _totalUsage.value,
-                userProfile = _userProfile.value
+                userProfile = _userProfile.value,
+                taskState = _taskState.value
             )
             storage.putString(HISTORY_KEY, json.encodeToString(data))
         } catch (e: Exception) {
@@ -183,8 +210,9 @@ class OpenAiAgent(
         
         _isLoading.value = true
         
+        // В режиме MULTI_LAYER_MEMORY обновляем всё: память и состояние задачи
         if (_strategy.value == ContextStrategy.MULTI_LAYER_MEMORY) {
-            updateMemoryLayers(text)
+            updateContext(text)
         }
         
         try {
@@ -214,15 +242,23 @@ class OpenAiAgent(
     private fun prepareContextMessages(): List<ChatMessage> {
         val sysPrompt = _systemPrompt.value
         val profile = _userProfile.value
+        val task = _taskState.value
         
-        // Базовый системный промпт с персонализацией
+        // Добавляем текущее состояние задачи в системный промпт
+        val statePrompt = """
+            [ТЕКУЩЕЕ СОСТОЯНИЕ ЗАДАЧИ]:
+            - Этап: ${task.stage}
+            - Текущий шаг: ${task.step}
+            - Ожидаемое действие: ${task.expectedAction}
+        """.trimIndent()
+
         val personalizedPrompt = """
             $sysPrompt
             
-            [ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ И ПРЕДПОЧТЕНИЯ]:
-            - Стиль ответов: ${profile.style}
-            - Формат: ${profile.format}
-            - Ограничения: ${profile.constraints}
+            [ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ]:
+            - Стиль: ${profile.style}, Формат: ${profile.format}, Ограничения: ${profile.constraints}
+            
+            $statePrompt
         """.trimIndent()
 
         return when (_strategy.value) {
@@ -236,11 +272,8 @@ class OpenAiAgent(
                 val augmentedSystem = """
                     $personalizedPrompt
                     
-                    [ТЕКУЩАЯ РАБОЧАЯ ПАМЯТЬ]:
-                    $working
-                    
-                    [ДОЛГОВРЕМЕННАЯ ПАМЯТЬ]:
-                    $longTerm
+                    [РАБОЧАЯ ПАМЯТЬ]: $working
+                    [ДОЛГОВРЕМЕННАЯ ПАМЯТЬ]: $longTerm
                 """.trimIndent()
                 
                 listOf(ChatMessage("system", augmentedSystem)) + _messages.value.takeLast(SHORT_TERM_WINDOW)
@@ -251,23 +284,54 @@ class OpenAiAgent(
         }
     }
     
-    private suspend fun updateMemoryLayers(userText: String) {
-        val memoryMessages = listOf(
-            ChatMessage("system", "Ты — система извлечения фактов. Обновляй longTerm (личность) и working (текущие задачи). Отвечай только JSON."),
-            ChatMessage("user", """
-                Обнови память. 
-                Working: ${_workingMemory.value}
-                Long-term: ${_longTermMemory.value}
-                User said: "$userText"
-            """.trimIndent())
-        )
+    /**
+     * Комплексное обновление контекста: Память + Task State Machine.
+     */
+    private suspend fun updateContext(userText: String) {
+        val prompt = """
+            Обнови контекст и состояние задачи. 
+            
+            ТЕКУЩИЕ ДАННЫЕ:
+            Memory Working: ${_workingMemory.value}
+            Memory Long-term: ${_longTermMemory.value}
+            Task State: [Stage: ${_taskState.value.stage}, Step: ${_taskState.value.step}, Action: ${_taskState.value.expectedAction}]
+            
+            Message: "$userText"
+            
+            Инструкция для Task Stage:
+            - PLANNING: Если обсуждаете план или ТЗ.
+            - EXECUTION: Если выполняете конкретные шаги.
+            - VALIDATION: Если проверяете результат.
+            - DONE: Если задача завершена.
+            - IDLE: Если задачи нет.
+            
+            Верни JSON:
+            {
+              "working": "обновленная рабочая память",
+              "longTerm": "обновленная долговременная память",
+              "task": {
+                "stage": "IDLE|PLANNING|EXECUTION|VALIDATION|DONE",
+                "step": "название текущего шага",
+                "expectedAction": "что должен сделать пользователь или ассистент"
+              }
+            }
+        """.trimIndent()
         
         try {
-            val response = openAiApi.chat(messages = memoryMessages, model = "gpt-4o", jsonMode = true)
+            val response = openAiApi.chat(messages = listOf(ChatMessage("user", prompt)), model = "gpt-4o", jsonMode = true)
             val root = json.parseToJsonElement(response.content) as? JsonObject
             if (root != null) {
                 _workingMemory.value = elementToString(root["working"]) ?: _workingMemory.value
                 _longTermMemory.value = elementToString(root["longTerm"]) ?: _longTermMemory.value
+                
+                val taskObj = root["task"] as? JsonObject
+                if (taskObj != null) {
+                    val stageStr = (taskObj["stage"] as? JsonPrimitive)?.content ?: "IDLE"
+                    val stage = try { TaskStage.valueOf(stageStr) } catch(e: Exception) { TaskStage.IDLE }
+                    val step = (taskObj["step"] as? JsonPrimitive)?.content ?: "Нет шага"
+                    val action = (taskObj["expectedAction"] as? JsonPrimitive)?.content ?: "Ожидание"
+                    _taskState.value = TaskState(stage, step, action)
+                }
                 saveHistory()
             }
         } catch (e: Exception) { }
@@ -294,6 +358,7 @@ class OpenAiAgent(
         _messages.value = emptyList()
         _workingMemory.value = ""
         _longTermMemory.value = ""
+        _taskState.value = TaskState()
         _branches.value = mapOf("Main" to emptyList())
         _currentBranchId.value = "Main"
         _totalUsage.value = TokenUsage(0, 0, 0)
@@ -309,5 +374,6 @@ data class AgentPersistedData(
     val longTermMemory: String,
     val strategy: ContextStrategy,
     val totalUsage: TokenUsage,
-    val userProfile: UserProfile? = null
+    val userProfile: UserProfile? = null,
+    val taskState: TaskState? = null
 )
