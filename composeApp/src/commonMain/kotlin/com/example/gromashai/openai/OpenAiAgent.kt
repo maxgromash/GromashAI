@@ -28,9 +28,9 @@ enum class ContextStrategy {
  */
 enum class TaskStage {
     IDLE,       // Ожидание задачи
-    PLANNING,   // Планирование
-    EXECUTION,  // Выполнение
-    VALIDATION, // Проверка
+    PLANNING,   // Планирование (сбор требований, ТЗ)
+    EXECUTION,  // Выполнение (написание кода, реализация)
+    VALIDATION, // Проверка (тестирование, ревью)
     DONE        // Завершено
 }
 
@@ -65,7 +65,7 @@ data class ChatMessage(
 )
 
 /**
- * Агент с многослойной моделью памяти, персонализацией, машиной состояний задачи и инвариантами.
+ * Агент с многослойной моделью памяти, персонализацией, машиной состояний задачи, инвариантами и контролируемыми переходами.
  */
 class OpenAiAgent(
     private val openAiApi: OpenAiApi,
@@ -270,6 +270,12 @@ class OpenAiAgent(
             - Этап: ${task.stage}
             - Текущий шаг: ${task.step}
             - Ожидаемое действие: ${task.expectedAction}
+            
+            [ПРАВИЛА ПЕРЕХОДОВ]:
+            - Ты не можешь перепрыгивать этапы.
+            - Нельзя приступать к EXECUTION (реализации) без завершенного PLANNING (утвержденного плана/ТЗ).
+            - Нельзя переходить к DONE без этапа VALIDATION (проверки результата).
+            - Если пользователь просит "сразу сделать" без плана, вежливо объясни, что сначала нужно пройти этап планирования.
         """.trimIndent()
 
         val fullSystemPrompt = """
@@ -306,17 +312,29 @@ class OpenAiAgent(
         }
     }
     
+    /**
+     * Комплексное обновление контекста: Память + Task State Machine с контролем переходов.
+     */
     private suspend fun updateContext(userText: String) {
         val prompt = """
-            Обнови контекст и состояние задачи. 
+            Обнови контекст и состояние задачи. Соблюдай правила переходов!
             
             ТЕКУЩИЕ ДАННЫЕ:
             Memory Working: ${_workingMemory.value}
             Memory Long-term: ${_longTermMemory.value}
-            Invariants: ${_invariants.value}
-            Task State: [Stage: ${_taskState.value.stage}, Step: ${_taskState.value.step}, Action: ${_taskState.value.expectedAction}]
+            Task State: [Stage: ${_taskState.value.stage}, Step: ${_taskState.value.step}]
             
             Message: "$userText"
+            
+            ДОПУСТИМЫЕ ПЕРЕХОДЫ (STAGES):
+            1. IDLE -> PLANNING (всегда, если появилась задача)
+            2. PLANNING -> EXECUTION (только если план готов и утвержден)
+            3. EXECUTION -> VALIDATION (когда реализация завершена)
+            4. VALIDATION -> DONE (если результат верен)
+            5. VALIDATION -> EXECUTION (если нужны правки)
+            6. DONE -> IDLE (если всё завершено)
+            
+            ЗАПРЕЩЕНО: Перескакивать этапы (например, из PLANNING сразу в VALIDATION).
             
             Верни JSON:
             {
@@ -340,10 +358,15 @@ class OpenAiAgent(
                 val taskObj = root["task"] as? JsonObject
                 if (taskObj != null) {
                     val stageStr = (taskObj["stage"] as? JsonPrimitive)?.content ?: "IDLE"
-                    val stage = try { TaskStage.valueOf(stageStr) } catch(e: Exception) { TaskStage.IDLE }
+                    val newStage = try { TaskStage.valueOf(stageStr) } catch(e: Exception) { _taskState.value.stage }
+                    
+                    // Валидация перехода (на стороне логики извлечения)
+                    // Модель уже получила инструкции, но мы можем добавить доп. логику здесь если нужно.
+                    // Пока доверяем модели, так как она видит правила переходов.
+                    
                     val step = (taskObj["step"] as? JsonPrimitive)?.content ?: "Нет шага"
                     val action = (taskObj["expectedAction"] as? JsonPrimitive)?.content ?: "Ожидание"
-                    _taskState.value = TaskState(stage, step, action)
+                    _taskState.value = TaskState(newStage, step, action)
                 }
                 saveHistory()
             }
