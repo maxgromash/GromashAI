@@ -1,6 +1,8 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.io.FileInputStream
 import java.util.Properties
+import java.util.jar.JarFile
+import java.io.File
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -8,6 +10,19 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kotlinSerialization)
+}
+
+tasks.register("printMcpClasses") {
+    doLast {
+        val f = File(rootProject.projectDir, "mcp_classes.txt")
+        f.writeText("")
+        configurations.getByName("debugCompileClasspath").files.filter { it.name.contains("mcp") }.forEach { file ->
+            f.appendText("MCP JAR: ${file.absolutePath}\n")
+            JarFile(file).entries().toList().forEach { entry ->
+                f.appendText("${entry.name}\n")
+            }
+        }
+    }
 }
 
 kotlin {
@@ -51,6 +66,7 @@ kotlin {
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.contentNegotiation)
             implementation(libs.ktor.serialization.kotlinxJson)
+            implementation(libs.ktor.client.logging) // Added for debugging
         }
 
         androidMain.dependencies {
@@ -59,6 +75,9 @@ kotlin {
 
             // Ktor engine Android
             implementation(libs.ktor.client.okhttp)
+
+            // MCP SDK
+            implementation(libs.mcp.sdk)
         }
 
         iosMain.dependencies {

@@ -19,6 +19,7 @@ import com.example.gromashai.screens.ChatScreen
 import com.example.gromashai.screens.Day1Screen
 import com.example.gromashai.screens.Day2Screen
 import com.example.gromashai.screens.Day5Screen
+import com.example.gromashai.screens.McpScreen
 import com.example.gromashai.storage.Settings
 
 private sealed interface Screen {
@@ -49,6 +50,11 @@ private sealed interface Screen {
         override val id: String = "agent_chat"
         override val title: String = "Чат с Агентом"
     }
+
+    data object Mcp : Screen {
+        override val id: String = "mcp"
+        override val title: String = "MCP Connection Test"
+    }
 }
 
 private fun screenFromId(id: String): Screen = when (id) {
@@ -57,6 +63,7 @@ private fun screenFromId(id: String): Screen = when (id) {
     Screen.Day2.id -> Screen.Day2
     Screen.Day5.id -> Screen.Day5
     Screen.AgentChat.id -> Screen.AgentChat
+    Screen.Mcp.id -> Screen.Mcp
     else -> Screen.Home
 }
 
@@ -121,19 +128,22 @@ fun App(context: Any? = null) {
                         onOpenDay1 = { screenId = Screen.Day1.id },
                         onOpenDay2 = { screenId = Screen.Day2.id },
                         onOpenDay5 = { screenId = Screen.Day5.id },
-                        onOpenAgent = { screenId = Screen.AgentChat.id }
+                        onOpenAgent = { screenId = Screen.AgentChat.id },
+                        onOpenMcp = { screenId = Screen.Mcp.id }
                     )
 
                     Screen.Day1.id -> Day1Screen(api = openAiApi)
                     Screen.Day2.id -> Day2Screen(api = openAiApi)
                     Screen.Day5.id -> Day5Screen(api = hfApi)
                     Screen.AgentChat.id -> ChatScreen(agent = agent)
+                    Screen.Mcp.id -> McpScreen(apiKeyProvider)
 
                     else -> HomeScreen(
                         onOpenDay1 = { screenId = Screen.Day1.id },
                         onOpenDay2 = { screenId = Screen.Day2.id },
                         onOpenDay5 = { screenId = Screen.Day5.id },
-                        onOpenAgent = { screenId = Screen.AgentChat.id }
+                        onOpenAgent = { screenId = Screen.AgentChat.id },
+                        onOpenMcp = { screenId = Screen.Mcp.id }
                     )
                 }
             }
@@ -146,7 +156,8 @@ private fun HomeScreen(
     onOpenDay1: () -> Unit,
     onOpenDay2: () -> Unit,
     onOpenDay5: () -> Unit,
-    onOpenAgent: () -> Unit
+    onOpenAgent: () -> Unit,
+    onOpenMcp: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -175,6 +186,11 @@ private fun HomeScreen(
             title = "Agent Chat",
             subtitle = "Простой агент с инкапсулированной логикой",
             onClick = onOpenAgent
+        )
+        DayTile(
+            title = "MCP Connection Test",
+            subtitle = "Проверка связи с MCP сервером Postman",
+            onClick = onOpenMcp
         )
     }
 }
